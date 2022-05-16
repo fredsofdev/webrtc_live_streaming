@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html style="background-color: transparent;">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>Janus WebRTC Server: Streaming Demo</title>
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/6.4.0/adapter.min.js" ></script>
+<script type="text/javascript" src="janus.js" ></script>
+<script src="libraries/seriously.js"></script>
+<script src="libraries/effects/seriously.chroma.js"></script>
+<script src="libraries/effects/seriously.crop.js"></script>
+<script src="libraries/effects/seriously.split.js"></script>
+<script src="libraries/effects/seriously.distortion.js"></script>
+
+<script type="text/javascript">{
+    document.addEventListener('DOMContentLoaded',function(e){
+        var server = null;
+if(window.location.protocol === 'http:')
+	server = "http://" + window.location.hostname + ":8088/janus";
+else
+	server = "https://" + window.location.hostname + ":8089/janus";
+
+
+server = 'http://3.36.125.123:8088/janus';	
+const queryString = window.location.search;
+const urlParams = new URLSearchParams(queryString);
+var name = urlParams.get('name');
+var janus = null;
+var streaming = null;
+var opaqueId = "streamingtest-"+Janus.randomString(12);
+
+
+var spinner = null;
+
+var selectedStream = null;
+var getStreamInterval = null;
+
+
+
+// Initialize the library (all console debuggers enabled)
+Janus.init({debug: "all", callback: function() {
+    
+    // Make sure the browser supports WebRTC
+    if(!Janus.isWebrtcSupported()) {
+        bootbox.alert("No WebRTC support... ");
+        return;
+    }
+    // Create session
+    janus = new Janus(
+        {
+            server: server,
+            success: function() {
+                // Attach to Streaming plugin
+                janus.attach(
+                    {
+                        plugin: "janus.plugin.streaming",
+                        opaqueId: opaqueId,
+                        success: function(pluginHandle) {
+                            Janus.debug("Streaming plugin established");
+                            streaming = pluginHandle;
+                            getStreamInterval = setInterval(getStreamInfo,200,parseInt(name));
+                        },
+                        error: function(error) {
+                            Janus.error("  -- Error attaching plugin... ", error);
+                            bootbox.alert("Error attaching plugin... " + error);
+                        },
+                        iceState: function(state) {
+                            Janus.log("ICE state changed to " + state);
+                        },
+                        webrtcState: function(on) {
+                            Janus.log("Janus says our WebRTC PeerConnection is " + (on ? "up" : "down") + " now");
+                        },
+                        onmessage: function(msg, jsep) {
+                            Janus.debug(" ::: Got a message :::", msg);
+                            var result = msg["result"];
+                            if(result) {
+                                if(result["status"]) {
+                                    var status = result["status"];
+                                    if(status === 'starting')
+                                        Janus.log("Event Starting");
+                                    else if(status === 'started')
+                                        Janus.log("Event Started");
+                                    else if(status === 'stopped')
+                                        stopStream();
+                                } 
+                            }
+                            if(jsep) {
+                                Janus.debug("Handling SDP as well...", jsep);
+                                var stereo = (jsep.sdp.indexOf("stereo=1") !== -1);
+                                // Offer from the plugin, let's answer
+                                streaming.createAnswer(
+                                    {
+                                        jsep: jsep,
+                                        media: { audioSend: false, videoSend: false, data: true },
+                                        customizeSdp: function(jsep) {
+                                            if(stereo && jsep.sdp.indexOf("stereo=1") == -1) {
+                                                jsep.sdp = jsep.sdp.replace("useinbandfec=1", "useinbandfec=1;stereo=1");
+                                            }
+                                        },
+                                        success: function(jsep) {
+                                            Janus.debug("Got SDP!", jsep);
+                                            var body = { request: "start" };
+                                            streaming.send({ message: body, jsep: jsep });
+                                        },
+                                        error: function(error) {
+                                            Janus.error("WebRTC error:", error);
+                                            bootbox.alert("WebRTC error... " + error.message);
+                                        }
+                                    });
+                            }
+                        },
+                        onremotestream: function(stream) {
+                            Janus.debug(" ::: Got a remote stream :::", stream);
+                            var remoteVideo = document.getElementById("remoteVideo");
+                            Janus.attachMediaStream(remoteVideo, stream);
+                            var videoTracks = stream.getVideoTracks();
+                            if(!videoTracks || videoTracks.length === 0) {
+                                // No remote video
+                                // $('#remoteVideo').hide();
+                                remoteVideo.style.display="none"
+                            } else {
+                                remoteVideo.style.display="block"
+                                remoteVideo.addEventListener('loadeddata', function() {
+                                    remoteVideo.play().then(function(){
+                                        Janus.log("RemoteVideo Started");
+                                        Complete.postMessage('Completed');
+                                    });
+                                    
+                                }, false);
+                                
+                                
+                                
+                            }
+                        },
+                        ondataopen: function(data) {
+                            Janus.log("The DataChannel is available!");
+                        },
+                        ondata: function(data) {
+                            Janus.debug("We got data from the DataChannel!", data);
+                        },
+                        oncleanup: function() {
+                            Janus.log(" ::: Got a cleanup notification :::");
+                        }
+                    });
+            },
+            error: function(error) {
+                Janus.error(error);
+                bootbox.alert(error, function() {
+                    window.location.reload();
+                });
+            },
+            destroyed: function() {
+                window.location.reload();
+            }
+        });
+    
+}});
+
+
+
+function getStreamInfo(selectedStream) {
+	console.log("Trying to get stream info with id: "+selectedStream);
+	var body = { request: "info", id: selectedStream };
+	streaming.send({ message: body, success: function(result) {
+		if(result["info"]) {
+            
+			Janus.log("Got info about stream with id: "+result["info"]["id"]);
+            startStream(result["info"]["id"]);
+            clearInterval(getStreamInterval);
+		}
+	}});
+}
+
+function startStream(selectedStream) {
+	Janus.log("Selected video id " + selectedStream);
+	if(!selectedStream) return;
+	var body = { request: "watch", id: selectedStream};
+	streaming.send({ message: body,});
+}
+
+function stopStream() {
+	var body = { request: "stop" };
+	streaming.send({ message: body });
+	streaming.hangup();
+}
+
+    });
+    document.addEventListener('DOMContentLoaded',function(e){
+        //when page ready...
+        
+        var vid = document.getElementById("remoteVideo");
+        var seriously = new Seriously();
+        vid.addEventListener("play", function() {
+    
+            
+            var target = seriously.target('#cOutput');
+    
+            var distortion = seriously.effect('distortion');
+            distortion.source = seriously.source('#remoteVideo')
+            distortion.uLensS = [1.0, 1.0, 1.017];
+            distortion.uLensF = [0.051, 0.21];
+    
+            var upper = seriously.transform('2d');
+            upper.source = distortion;
+            
+            var split = seriously.effect('split');
+            var chroma = seriously.effect('chroma');
+            
+            chroma.screen = [44 / 255, 195 / 255, 110 / 255, 1]
+            chroma.source = upper;
+            chroma.clipWhite = 1;
+            chroma.clipBlack = 0;
+            chroma.mask = false;
+            split.split = 0.4;
+            split.sourceA = chroma;
+            cropLow = seriously.effect('crop');
+            cropLow.source = distortion
+            cropLow.right = 250
+            split.sourceB = distortion;
+            crop = seriously.effect('crop');
+            crop.source = split
+            crop.left = 250
+            target.source = crop;
+            seriously.go();
+        
+        }, false);
+        
+        var vid2 = document.getElementById("remoteVideo");
+        vid2.addEventListener("timeupdate", function(){
+            // checkSuccess();
+        });
+
+        var threshold=2000;
+	var list=new Array();
+	var video = document.getElementById('remoteVideo');
+	var canvas = document.getElementById('canvasInput');
+	var ctx = canvas.getContext('2d');
+	var l_r = 101;
+    var l_g = 250;
+    var l_b = 157;
+
+    var d_r = 44;
+    var d_g = 198;
+    var d_b = 120;  
+
+    var tolerance = 0.06;
+
+	let $type='green';
+
+	 function checkSuccess(){
+		
+		//Fitting position...
+		ctx.drawImage(video,870,495,50,155,0, 0,50,155);
+		
+		
+		var pixelData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+		
+		
+		var img = document.createElement("img");
+		img.src = canvas.toDataURL("image/png");
+		//document.body.appendChild(img);
+		
+		
+		var areaOfBaseColor=0;
+		var pastIndex=0;
+		var howManyCubeStacked=0;
+		
+		for(var i = 0;i<pixelData.data.length;i+=4){
+			var red = pixelData.data[i];
+			var green = pixelData.data[i+1];
+			var blue = pixelData.data[i+2];
+
+			var difference = calculateDistance(red, d_r, l_r) +
+								calculateDistance(green, d_g, l_g) +
+								calculateDistance(blue, d_b, l_b);
+			
+			difference /= (255 * 3);
+			
+			if($type=='green' && difference < tolerance){
+				pixelData.data[i] = 0
+				pixelData.data[i+1] = 0
+				pixelData.data[i+2] = 255
+				areaOfBaseColor++;
+			}
+		};
+
+		ctx.putImageData(pixelData, 0, 0);
+		
+		if(areaOfBaseColor < threshold){
+			console.log("success: " + areaOfBaseColor);
+			return 'success';
+		}else{
+			console.log("fail: " + areaOfBaseColor);
+			return 'fail';
+		}
+		
+	}
+
+	function calculateDistance(c, min, max) {
+	  if(c < min) return min - c;
+      if(c > max) return c - max;
+
+      return 0;
+	}
+        
+        //ROI SETTING
+    
+    });//end of DOMContentLoaded
+        
+    }</script>
+
+<style>
+    body{
+        width:100vw;
+        height:100vh;
+        background: transparent !important;
+        margin:0;
+        padding:0;
+    }
+    
+    #cOutput {
+        height: 100vw;
+        width: 100vh;
+        left: 0%;
+        top: 0%;
+        transform: rotate(270deg);
+        /* transform: translate(-23%, 35%); */
+    }
+</style>
+
+</head>
+<body style="position: relative;">
+	
+	<div style="width:100%;height:100%;position:fixed;top:0;left:0;display:flex;align-items:center;justify-content:center;background:transparent;">
+		<div style="position:realative;width:100%;height:100%;background:transparent;">
+		   <div style="position:absolute;width:100%;height:100%;top:-100%;left:-100%;background:transparent;z-index:9998;display:flex;align-items:center;justify-content:center;">
+			<video id="remoteVideo" autoplay = "autoplay" muted = "muted" 
+			style="display: none; height: 100%; max-width: 1920px; max-height: 1080px;"></video>
+		   </div>
+		   <div style="position:absolute;width:100%;height:100%;top:0;left:0;background:transparent;z-index:9999;display:flex;align-items:center;justify-content:center;">
+			  <canvas id="cOutput" width="1670" height="1080" style="width:100vh;height:100vw;display: block;"/>
+		   </div>
+		   
+		   
+		</div>
+	 </div>
+	 <canvas id="canvasInput" style="display: none;width:100px;height:160px;position: absolute;top:150px;right:150px" width="100" height="100"/>
+	 
+</body>
+</html>
